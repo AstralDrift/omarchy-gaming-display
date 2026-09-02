@@ -95,7 +95,7 @@ if rg -F 'modeline' "$TEMP/hyprctl.log" >/dev/null; then fail "never submits a c
 
 $CLI setup >/dev/null
 [[ $(readlink -f "$TEMP/local-bin/omarchy-gaming-display") == "$CLI" ]] || fail "installs the optional CLI symlink"
-[[ $($CLI --version) == "omarchy-gaming-display 1.1.1" ]] || fail "reports the plugin version"
+[[ $($CLI --version) == "omarchy-gaming-display 1.1.3" ]] || fail "reports the plugin version"
 $CLI teardown >/dev/null
 [[ ! -e $TEMP/local-bin/omarchy-gaming-display && ! -L $TEMP/local-bin/omarchy-gaming-display ]] || fail "removes its own CLI symlink"
 

@@ -80,6 +80,8 @@ Panel {
 
   function desktopAction(profile) {
     if (profile === "native") return "Use full monitor · 32:9"
+    var data = profileData(profile)
+    if (!data || !data.available) return profile + " desktop unavailable"
     return "Center desktop · " + profile
   }
 
@@ -88,7 +90,7 @@ Panel {
     var data = profileData(profile)
     if (profile === "native") return resolution + " · Native output · restores the full-width desktop"
     if (!data || !data.available)
-      return resolution + " · Gamescope only · not advertised by this monitor; use Steam below"
+      return resolution + " · Monitor does not offer this input mode · use Steam below"
     if (data.verified) return resolution + " · Ready · verified for this monitor"
     return resolution + " · Test once · starts a timed safety test"
   }
@@ -98,7 +100,9 @@ Panel {
     var data = profileData(profile)
     root.message = ""
     if (profile !== "native" && (!data || !data.available)) {
-      root.message = profile + " is not advertised by this monitor. Use the Steam / Gamescope option below."
+      root.message = "The monitor does not offer a " + profileResolution(profile)
+        + " desktop input mode. Use Copy Steam " + profile
+        + " below; it renders that size inside the native output."
       return
     }
     root.busy = true
@@ -289,7 +293,6 @@ Panel {
                   tooltipText: root.desktopSummary(modelData.id)
                   selected: root.activeProfile === modelData.id
                   enabled: !root.busy && root.pendingToken === ""
-                    && (modelData.id === "native" || (profileInfo && profileInfo.available))
                   foreground: root.foreground
                   bordered: true
                   onClicked: root.selectDesktop(modelData.id)

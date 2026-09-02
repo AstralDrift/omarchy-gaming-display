@@ -3,7 +3,7 @@
 set -Eeuo pipefail
 
 PROGRAM="omarchy-gaming-display"
-VERSION="1.1.1"
+VERSION="1.1.3"
 SELF_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 SELF="$SELF_DIR/$(basename -- "${BASH_SOURCE[0]}")"
 
@@ -516,7 +516,9 @@ desktop_test() {
   local profile=$1 timeout=$2
   [[ $profile != native ]] || die "the native profile does not require testing" 2
   lock_mutation
-  [[ -r $PENDING_FILE ]] && revert_pending_internal "" || true
+  if [[ -r $PENDING_FILE ]]; then
+    revert_pending_internal "" || true
+  fi
 
   local monitors monitor fingerprint prior kind mode refresh record token expires pending
   local candidate_found=false
@@ -582,7 +584,9 @@ desktop_revert() {
 desktop_set() {
   local profile=$1
   lock_mutation
-  [[ -r $PENDING_FILE ]] && revert_pending_internal "" || true
+  if [[ -r $PENDING_FILE ]]; then
+    revert_pending_internal "" || true
+  fi
   local monitors monitor base fingerprint kind mode refresh record
   local candidate_found=false
   monitors=$(hypr_monitors)
