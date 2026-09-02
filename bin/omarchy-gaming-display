@@ -7,7 +7,6 @@ SELF_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 SELF="$SELF_DIR/$(basename -- "${BASH_SOURCE[0]}")"
 
 HYPRCTL=${OGD_HYPRCTL:-hyprctl}
-CVT=${OGD_CVT:-cvt}
 GAMESCOPE=${OGD_GAMESCOPE:-gamescope}
 SYS_CLASS_DRM=${OGD_SYS_CLASS_DRM:-/sys/class/drm}
 CONFIG_HOME=${OGD_CONFIG_HOME:-${XDG_CONFIG_HOME:-$HOME/.config}}
@@ -37,8 +36,9 @@ Usage:
   omarchy-gaming-display steam-option <native|21:9|16:9> [--copy]
   omarchy-gaming-display setup
 
-Desktop modes are runtime-only. A reduced mode must pass a rollback-protected
-test once for the exact monitor and mode before `desktop set` will apply it.
+Desktop modes are runtime-only and restricted to resolutions advertised by the
+monitor. A reduced mode must pass a rollback-protected test once for the exact
+monitor and mode before `desktop set` will apply it.
 USAGE
 }
 
@@ -98,7 +98,6 @@ default_config() {
     version: 1,
     monitor: {connector: "", fingerprint: ""},
     rollbackSeconds: 15,
-    fallbackRefreshRates: [240, 120, 60],
     profiles: {
       "21:9": {width: 0, height: 0, maxRefreshHz: 0},
       "16:9": {width: 0, height: 0, maxRefreshHz: 0}
@@ -122,8 +121,6 @@ ensure_config() {
     and (.monitor.connector | type == "string")
     and (.monitor.fingerprint | type == "string")
     and (.rollbackSeconds | type == "number") and .rollbackSeconds >= 5 and .rollbackSeconds <= 120
-    and (.fallbackRefreshRates | type == "array")
-    and all(.fallbackRefreshRates[]; (type == "number") and . > 0)
     and (.profiles | type == "object")
     and all(.profiles["21:9"].width, .profiles["21:9"].height, .profiles["21:9"].maxRefreshHz,
             .profiles["16:9"].width, .profiles["16:9"].height, .profiles["16:9"].maxRefreshHz;
@@ -311,7 +308,7 @@ profile_spec() {
 mode_candidates() {
   local profile=$1
   local monitor=$2
-  local spec width height max_refresh advertised mode refresh config rate cvt_output line remainder
+  local spec width height max_refresh advertised mode refresh
   spec=$(profile_spec "$profile" "$monitor")
   width=$(jq -r '.width' <<<"$spec")
   height=$(jq -r '.height' <<<"$spec")
@@ -334,27 +331,7 @@ mode_candidates() {
     while IFS=$'\t' read -r mode refresh; do
       [[ -n $mode ]] && printf 'advertised\t%s\t%s\n' "$mode" "$refresh"
     done <<<"$advertised"
-    return 0
   fi
-
-  need "$CVT"
-  config=$(load_config)
-  while IFS= read -r rate; do
-    [[ -n $rate ]] || continue
-    awk -v rate="$rate" -v max="$max_refresh" 'BEGIN { exit !(rate <= max + 0.51) }' || continue
-    cvt_output=$($CVT -r "$width" "$height" "$rate" 2>/dev/null || true)
-    line=$(awk '/^Modeline / { print; exit }' <<<"$cvt_output")
-    [[ -n $line ]] || continue
-    remainder=${line#*\" }
-    [[ $remainder != "$line" ]] || continue
-    remainder=${remainder# }
-    printf 'custom\tmodeline %s\t%s\n' "$remainder" "$rate"
-  done < <(
-    {
-      printf '%s\n' "$(printf '%.0f' "$max_refresh")"
-      jq -r '.fallbackRefreshRates[]' <<<"$config"
-    } | awk '!seen[$0]++'
-  )
 }
 
 monitor_record() {
@@ -418,7 +395,8 @@ target_position_for_width() {
 
 apply_record() {
   local record=$1
-  local connector mode width height x y scale transform rule response live
+  local connector mode width height x y scale transform position
+  local output_lua mode_lua position_lua code response live
   connector=$(jq -r '.connector' <<<"$record")
   mode=$(jq -r '.mode' <<<"$record")
   width=$(jq -r '.width' <<<"$record")
@@ -427,15 +405,16 @@ apply_record() {
   y=$(jq -r '.y' <<<"$record")
   scale=$(jq -r '.scale' <<<"$record")
   transform=$(jq -r '.transform // 0' <<<"$record")
-  rule="$connector,$mode,${x}x${y},$scale"
+  position="${x}x${y}"
+  output_lua=$(jq -Rn --arg value "$connector" '$value')
+  mode_lua=$(jq -Rn --arg value "$mode" '$value')
+  position_lua=$(jq -Rn --arg value "$position" '$value')
+  code="hl.monitor({ output = $output_lua, mode = $mode_lua, position = $position_lua, scale = $scale, transform = $transform })"
 
-  response=$($HYPRCTL keyword monitor "$rule" 2>&1) || {
+  response=$($HYPRCTL eval "$code" 2>&1) || {
     printf '%s\n' "$response" >&2
     return 1
   }
-  if [[ $transform != 0 ]]; then
-    $HYPRCTL keyword monitor "$connector,transform,$transform" >/dev/null 2>&1 || return 1
-  fi
   sleep 0.6
   live=$(hypr_monitors)
   jq -e --arg connector "$connector" --argjson width "$width" --argjson height "$height" --argjson refresh "$(jq -r '.refresh' <<<"$record")" '
@@ -537,6 +516,7 @@ desktop_test() {
   [[ -r $PENDING_FILE ]] && revert_pending_internal "" || true
 
   local monitors monitor fingerprint prior kind mode refresh record token expires pending
+  local candidate_found=false
   monitors=$(hypr_monitors)
   monitor=$(select_target "$monitors")
   fingerprint=$(monitor_fingerprint "$monitor")
@@ -545,6 +525,7 @@ desktop_test() {
 
   while IFS=$'\t' read -r kind mode refresh; do
     [[ -n $mode ]] || continue
+    candidate_found=true
     record=$(profile_record "$profile" "$monitor" "$mode" "$refresh")
     token=$(new_token)
     expires=$(($(date +%s) + timeout))
@@ -565,7 +546,9 @@ desktop_test() {
     fi
     revert_pending_internal "$token" || true
   done < <(mode_candidates "$profile" "$monitor")
-  die "no usable mode candidate could be applied for $profile"
+  [[ $candidate_found == true ]] || \
+    die "profile '$profile' is not advertised by this monitor; use Gamescope: $PROGRAM steam-option $profile" 4
+  die "no usable advertised mode could be applied for $profile"
 }
 
 desktop_confirm() {
@@ -598,6 +581,7 @@ desktop_set() {
   lock_mutation
   [[ -r $PENDING_FILE ]] && revert_pending_internal "" || true
   local monitors monitor base fingerprint kind mode refresh record
+  local candidate_found=false
   monitors=$(hypr_monitors)
   monitor=$(select_target "$monitors")
   base=$(ensure_base "$monitor")
@@ -611,6 +595,7 @@ desktop_set() {
 
   while IFS=$'\t' read -r kind mode refresh; do
     [[ -n $mode ]] || continue
+    candidate_found=true
     is_verified "$fingerprint" "$profile" "$mode" || continue
     record=$(profile_record "$profile" "$monitor" "$mode" "$refresh")
     if apply_record "$record"; then
@@ -619,6 +604,8 @@ desktop_set() {
       return 0
     fi
   done < <(mode_candidates "$profile" "$monitor")
+  [[ $candidate_found == true ]] || \
+    die "profile '$profile' is not advertised by this monitor; use Gamescope: $PROGRAM steam-option $profile" 4
   die "profile '$profile' has no verified usable mode; run: $PROGRAM desktop test $profile" 4
 }
 

@@ -75,6 +75,10 @@ Panel {
     if (busy || pendingToken !== "") return
     var data = profileData(profile)
     root.message = ""
+    if (profile !== "native" && (!data || !data.available)) {
+      root.message = profile + " is not advertised by this monitor. Use the Steam / Gamescope option below."
+      return
+    }
     root.busy = true
     if (profile === "native" || (data && data.verified))
       actionProc.command = [root.cliPath, "desktop", "set", profile, "--json"]
@@ -234,16 +238,29 @@ Panel {
 
               Button {
                 required property var modelData
+                readonly property var profileInfo: root.profileData(modelData.id)
                 width: (contentColumn.width - Style.space(12)) / 3
                 text: modelData.title
-                tooltipText: modelData.hint
+                tooltipText: modelData.id !== "native" && (!profileInfo || !profileInfo.available)
+                  ? modelData.hint + " · Gamescope only"
+                  : modelData.hint
                 selected: root.activeProfile === modelData.id
                 enabled: !root.busy && root.pendingToken === ""
+                  && (modelData.id === "native" || (profileInfo && profileInfo.available))
                 foreground: root.foreground
                 bordered: true
                 onClicked: root.selectDesktop(modelData.id)
               }
             }
+          }
+
+          Text {
+            width: parent.width
+            text: "Desktop switching only uses modes advertised by the monitor. Unavailable profiles remain usable through Gamescope."
+            color: Qt.darker(root.foreground, 1.35)
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.bodySmall
+            wrapMode: Text.WordWrap
           }
 
           Column {

@@ -21,23 +21,30 @@ if [[ ${1:-} == reload ]]; then
   exit 0
 fi
 
-if [[ ${1:-} == keyword && ${2:-} == monitor ]]; then
-  rule=${3:-}
-  IFS=, read -r connector mode position scale <<<"$rule"
+if [[ ${1:-} == eval ]]; then
+  code=${2:-}
+  [[ $code == 'hl.monitor({ output = '* ]] || {
+    printf 'unexpected eval code: %s\n' "$code" >&2
+    exit 2
+  }
+  fields=${code#'hl.monitor({ output = '}
+  connector_json=${fields%%', mode = '*}
+  fields=${fields#*', mode = '}
+  mode_json=${fields%%', position = '*}
+  fields=${fields#*', position = '}
+  position_json=${fields%%', scale = '*}
+  fields=${fields#*', scale = '}
+  scale=${fields%%', transform = '*}
+  transform=${fields#*', transform = '}
+  transform=${transform%' })'}
+  connector=$(jq -r . <<<"$connector_json")
+  mode=$(jq -r . <<<"$mode_json")
+  position=$(jq -r . <<<"$position_json")
 
-  if [[ $mode == transform ]]; then
-    exit 0
-  fi
-
-  if [[ $mode == modeline\ * ]]; then
-    read -r _ clock width _ _ _ height _ <<<"$mode"
-    refresh=${MOCK_CUSTOM_REFRESH:-240}
-  else
-    resolution=${mode%%@*}
-    width=${resolution%x*}
-    height=${resolution#*x}
-    refresh=${mode#*@}
-  fi
+  resolution=${mode%%@*}
+  width=${resolution%x*}
+  height=${resolution#*x}
+  refresh=${mode#*@}
 
   x=${position%x*}
   y=${position#*x}
@@ -48,7 +55,7 @@ if [[ ${1:-} == keyword && ${2:-} == monitor ]]; then
     'map(if .name == $connector then . + {width:$width,height:$height,refreshRate:$refresh,x:$x,y:$y,scale:$scale} else . end)' \
     "$MOCK_MONITORS" >"$temp"
   mv "$temp" "$MOCK_MONITORS"
-  printf '%s\n' "$rule" >>"${MOCK_HYPR_LOG:-/dev/null}"
+  printf '%s\n' "$code" >>"${MOCK_HYPR_LOG:-/dev/null}"
   printf 'ok\n'
   exit 0
 fi

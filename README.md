@@ -9,11 +9,12 @@ three centered display profiles from the bar:
 
 There are two independent ways to use a reduced profile:
 
-1. **Desktop output:** Hyprland changes the output mode at runtime. The display
-   is centered by keeping the native output center fixed. Unsupported custom
-   modes always have an automatic rollback countdown.
+1. **Desktop output:** Hyprland changes to an EDID-advertised output mode at
+   runtime. The display is centered by keeping the native output center fixed,
+   and every first-time reduced mode has an automatic rollback countdown.
 2. **Steam / Gamescope:** the desktop stays native while Gamescope exposes the
    selected resolution to one game and pillarboxes it inside the native output.
+   This path also supports resolutions the monitor does not advertise.
 
 ## Important monitor setting
 
@@ -56,15 +57,17 @@ unrelated existing command.
 
 ## Desktop profiles
 
-Click the bar widget and choose a profile. The first use of each reduced mode
-starts a 15-second safety test. Choose **Keep** while the output is visible and
-correct; otherwise the independent watchdog restores the previous mode.
+Click the bar widget and choose an available desktop profile. The first use of
+each reduced mode starts a 15-second safety test. Choose **Keep** while the
+output is visible and correct; otherwise the independent watchdog restores the
+previous mode. A disabled desktop button means the monitor does not advertise
+that resolution; its Steam / Gamescope button remains available.
 
 The same workflow is available from the CLI:
 
 ```bash
 omarchy-gaming-display status
-omarchy-gaming-display desktop test 21:9
+omarchy-gaming-display desktop test 16:9
 omarchy-gaming-display desktop confirm
 omarchy-gaming-display desktop set 16:9
 omarchy-gaming-display desktop set native
@@ -80,15 +83,21 @@ The target is the widest enabled output with an aspect ratio of at least 2.5.
 For each reduced profile the helper:
 
 1. Uses an EDID-advertised resolution when available.
-2. Otherwise generates reduced-blanking modelines with `cvt`.
-3. Tests the configured maximum refresh first, followed by the fallback list.
+2. Refuses unadvertised desktop modes instead of submitting a custom modeline.
+3. Tries advertised refresh rates from highest to lowest within the configured
+   maximum.
 4. Remembers verification by monitor EDID fingerprint, profile, and exact mode.
 
 For the detected 5120×1440 / 240 Hz MSI, this means:
 
 - Native: advertised `5120×1440@240`.
 - 16:9: advertised `2560×1440@240.25`.
-- 21:9: custom `3440×1440`, testing 240 Hz first, then 120 and 60 Hz.
+- 21:9: not advertised, so it is Gamescope-only at `3440×1440`.
+
+Custom DRM modelines are deliberately unsupported. A rejected custom mode can
+take down the compositor or graphics driver before a userspace rollback can run;
+Gamescope provides the same centered game geometry without changing the output
+mode.
 
 ## Steam launch options
 
@@ -122,7 +131,6 @@ The helper creates `~/.config/omarchy/gaming-display.json` on first use:
     "fingerprint": ""
   },
   "rollbackSeconds": 15,
-  "fallbackRefreshRates": [240, 120, 60],
   "profiles": {
     "21:9": {"width": 0, "height": 0, "maxRefreshHz": 0},
     "16:9": {"width": 0, "height": 0, "maxRefreshHz": 0}
@@ -147,7 +155,7 @@ Runtime snapshots and verification records live under
 
 - Omarchy 4 with its Quickshell plugin host
 - Hyprland and `hyprctl`
-- `jq`, `cvt`, `sha256sum`, `awk`, `flock`
+- `jq`, `sha256sum`, `awk`, `flock`
 - Gamescope for per-game profiles
 - `wl-copy` for the panel's copy buttons
 
@@ -159,7 +167,7 @@ tests/test-cli.sh
 omarchy plugin validate .
 ```
 
-The test suite supplies mock Hyprland, CVT, Gamescope, and clipboard commands;
+The test suite supplies mock Hyprland, Gamescope, and clipboard commands;
 it does not change a real display.
 
 ## Recovery

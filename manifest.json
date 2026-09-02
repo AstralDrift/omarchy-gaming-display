@@ -2,10 +2,10 @@
   "schemaVersion": 1,
   "id": "astraldrift.gaming-display",
   "name": "Gaming Display",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "author": "AstralDrift",
   "license": "MIT",
-  "description": "Centered 32:9, 21:9, and 16:9 desktop and Gamescope profiles for super-ultrawide gaming displays.",
+  "description": "EDID-safe desktop switching and centered Gamescope profiles for super-ultrawide gaming displays.",
   "kinds": [
     "bar-widget"
   ],
@@ -15,7 +15,7 @@
   },
   "barWidget": {
     "displayName": "Gaming Display",
-    "description": "Safely switch centered desktop modes and copy matching Steam/Gamescope launch options.",
+    "description": "Switch advertised centered desktop modes and copy matching Steam/Gamescope launch options.",
     "category": "Gaming",
     "aliases": [
       "gaming",
