@@ -3,6 +3,7 @@
 set -Eeuo pipefail
 
 PROGRAM="omarchy-gaming-display"
+VERSION="1.1.0"
 SELF_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 SELF="$SELF_DIR/$(basename -- "${BASH_SOURCE[0]}")"
 
@@ -35,6 +36,8 @@ Usage:
   omarchy-gaming-display game <native|21:9|16:9> -- <command...>
   omarchy-gaming-display steam-option <native|21:9|16:9> [--copy]
   omarchy-gaming-display setup
+  omarchy-gaming-display teardown
+  omarchy-gaming-display --version
 
 Desktop modes are runtime-only and restricted to resolutions advertised by the
 monitor. A reduced mode must pass a rollback-protected test once for the exact
@@ -161,7 +164,7 @@ native_mode_json() {
 
 monitor_fingerprint() {
   local monitor=$1
-  local connector edid path native description
+  local connector path native description
   connector=$(jq -r '.name' <<<"$monitor")
   shopt -s nullglob
   for path in "$SYS_CLASS_DRM"/card*-"$connector"/edid; do
@@ -630,7 +633,7 @@ profile_status_json() {
 }
 
 status_json() {
-  local monitors monitor fingerprint native active pending='null' now remaining profiles='[]' spec profile current_width current_height
+  local monitors monitor fingerprint native active pending='null' now profiles='[]' spec profile current_width current_height
   monitors=$(hypr_monitors)
   monitor=$(select_target "$monitors")
   fingerprint=$(monitor_fingerprint "$monitor")
@@ -722,6 +725,18 @@ setup_cli() {
   printf 'Installed: %s -> %s\n' "$target" "$SELF"
 }
 
+teardown_cli() {
+  local target="$BIN_HOME/$PROGRAM" resolved=""
+  if [[ ! -e $target && ! -L $target ]]; then
+    printf 'Not installed: %s\n' "$target"
+    return 0
+  fi
+  resolved=$(readlink -f -- "$target" 2>/dev/null || true)
+  [[ $resolved == "$SELF" ]] || die "refusing to remove $target because it points somewhere else"
+  rm -f -- "$target"
+  printf 'Removed: %s\n' "$target"
+}
+
 watchdog() {
   local token=$1 timeout=$2
   sleep "$timeout"
@@ -742,13 +757,18 @@ parse_common_flag() {
 }
 
 main() {
-  need jq
   local arg
   for arg in "$@"; do
     [[ $arg == --json ]] && JSON_MODE=1
   done
-  ensure_config
   local command=${1:-help}
+  case "$command" in
+  help | -h | --help) usage; return 0 ;;
+  version | -V | --version) printf '%s %s\n' "$PROGRAM" "$VERSION"; return 0 ;;
+  esac
+
+  need jq
+  ensure_config
   shift || true
 
   case "$command" in
@@ -776,7 +796,9 @@ main() {
         esac
       done
       [[ -n $timeout ]] || timeout=$(jq -r '.rollbackSeconds' <<<"$(load_config)")
-      [[ $timeout =~ ^[0-9]+$ ]] && ((timeout >= 5 && timeout <= 120)) || die "timeout must be 5-120 seconds" 2
+      if [[ ! $timeout =~ ^[0-9]+$ ]] || ((timeout < 5 || timeout > 120)); then
+        die "timeout must be 5-120 seconds" 2
+      fi
       desktop_test "$profile" "$timeout"
       ;;
     set)
@@ -825,10 +847,10 @@ main() {
     steam_option "$profile" "$copy"
     ;;
   setup) setup_cli ;;
+  teardown) teardown_cli ;;
   _watchdog)
     watchdog "${1:?token required}" "${2:?timeout required}"
     ;;
-  help | -h | --help) usage ;;
   *) usage >&2; die "unknown command '$command'" 2 ;;
   esac
 }

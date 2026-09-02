@@ -82,7 +82,7 @@ BarWidget {
     anchors.fill: parent
     bar: root.bar
     text: root.vertical ? "󰍹" : root.statusLabel
-    tooltipText: "Gaming display: " + root.statusLabel
+    tooltipText: "Gaming Display · " + root.statusLabel + " · switch desktop or copy a Steam profile"
     horizontalMargin: 8.75
     verticalPadding: 8.75
     onPressed: function(b) {

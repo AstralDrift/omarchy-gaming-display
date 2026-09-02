@@ -1,0 +1,43 @@
+name: Feature request
+description: Suggest a safe improvement to the plugin.
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem to solve
+      description: What gaming or display workflow is difficult today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: Describe the smallest useful outcome, including panel or CLI behavior.
+    validations:
+      required: true
+  - type: input
+    id: monitor
+    attributes:
+      label: Relevant monitor and native mode
+      placeholder: 5120×1440 at 240 Hz
+  - type: dropdown
+    id: path
+    attributes:
+      label: Preferred path
+      options:
+        - Gamescope-only
+        - EDID-advertised desktop mode
+        - Either
+        - Not display-mode related
+    validations:
+      required: true
+  - type: checkboxes
+    id: invariant
+    attributes:
+      label: Display safety
+      options:
+        - label: This request does not require a custom modeline or persistent monitor-config edit.
+          required: true

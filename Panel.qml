@@ -71,6 +71,19 @@ Panel {
     return null
   }
 
+  function profileResolution(profile) {
+    var data = profileData(profile)
+    if (!data) return ""
+    return String(data.width) + "×" + String(data.height)
+  }
+
+  function desktopAvailability(profile) {
+    if (profile === "native") return "Native output"
+    var data = profileData(profile)
+    if (!data || !data.available) return "Gamescope only"
+    return data.verified ? "Ready" : "Test once"
+  }
+
   function selectDesktop(profile) {
     if (busy || pendingToken !== "") return
     var data = profileData(profile)
@@ -222,8 +235,17 @@ Panel {
             }
           }
 
+          Text {
+            width: parent.width
+            text: "Resize the whole desktop below, or keep the desktop native and resize only one Steam game."
+            color: Qt.darker(root.foreground, 1.35)
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.bodySmall
+            wrapMode: Text.WordWrap
+          }
+
           PanelSeparator { foreground: root.foreground }
-          PanelSectionHeader { text: "DESKTOP OUTPUT"; foreground: root.foreground; fontFamily: root.fontFamily }
+          PanelSectionHeader { text: "DESKTOP · WHOLE SCREEN"; foreground: root.foreground; fontFamily: root.fontFamily }
 
           Row {
             width: parent.width
@@ -231,9 +253,9 @@ Panel {
 
             Repeater {
               model: [
-                { id: "native", title: "32:9", hint: "Native" },
-                { id: "21:9", title: "21:9", hint: "3440" },
-                { id: "16:9", title: "16:9", hint: "2560" }
+                { id: "native", title: "32:9" },
+                { id: "21:9", title: "21:9" },
+                { id: "16:9", title: "16:9" }
               ]
 
               Button {
@@ -241,15 +263,35 @@ Panel {
                 readonly property var profileInfo: root.profileData(modelData.id)
                 width: (contentColumn.width - Style.space(12)) / 3
                 text: modelData.title
-                tooltipText: modelData.id !== "native" && (!profileInfo || !profileInfo.available)
-                  ? modelData.hint + " · Gamescope only"
-                  : modelData.hint
+                tooltipText: root.profileResolution(modelData.id) + " · " + root.desktopAvailability(modelData.id)
                 selected: root.activeProfile === modelData.id
                 enabled: !root.busy && root.pendingToken === ""
                   && (modelData.id === "native" || (profileInfo && profileInfo.available))
                 foreground: root.foreground
                 bordered: true
                 onClicked: root.selectDesktop(modelData.id)
+              }
+            }
+          }
+
+          Row {
+            width: parent.width
+            spacing: Style.space(6)
+
+            Repeater {
+              model: ["native", "21:9", "16:9"]
+
+              Text {
+                required property string modelData
+                width: (contentColumn.width - Style.space(12)) / 3
+                text: root.profileResolution(modelData) + "\n" + root.desktopAvailability(modelData)
+                color: modelData !== "native" && root.desktopAvailability(modelData) === "Gamescope only"
+                  ? Qt.darker(root.foreground, 1.5)
+                  : Qt.darker(root.foreground, 1.25)
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+                horizontalAlignment: Text.AlignHCenter
+                wrapMode: Text.WordWrap
               }
             }
           }
@@ -305,11 +347,11 @@ Panel {
           }
 
           PanelSeparator { foreground: root.foreground }
-          PanelSectionHeader { text: "STEAM / GAMESCOPE"; foreground: root.foreground; fontFamily: root.fontFamily }
+          PanelSectionHeader { text: "STEAM · ONE GAME"; foreground: root.foreground; fontFamily: root.fontFamily }
 
           Text {
             width: parent.width
-            text: "Copy a launch option that keeps the desktop native while the game sees a centered virtual display."
+            text: "Copy, then paste into Steam → game Properties → Launch Options. The desktop stays native while Gamescope centers the game."
             color: Qt.darker(root.foreground, 1.35)
             font.family: root.fontFamily
             font.pixelSize: Style.font.bodySmall
@@ -322,7 +364,7 @@ Panel {
 
             Button {
               width: (parent.width - parent.spacing) / 2
-              text: "Copy 21:9"
+              text: "Copy Steam 21:9"
               iconText: "󰆏"
               foreground: root.foreground
               bordered: true
@@ -332,7 +374,7 @@ Panel {
 
             Button {
               width: (parent.width - parent.spacing) / 2
-              text: "Copy 16:9"
+              text: "Copy Steam 16:9"
               iconText: "󰆏"
               foreground: root.foreground
               bordered: true

@@ -1,0 +1,77 @@
+name: Bug report
+description: Report a display, Gamescope, CLI, or panel problem.
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Restore native mode before collecting details. Redact monitor serials, fingerprints, usernames, and other personal data.
+  - type: input
+    id: version
+    attributes:
+      label: Plugin version
+      description: Run `omarchy-gaming-display --version`.
+      placeholder: omarchy-gaming-display 1.1.0
+    validations:
+      required: true
+  - type: input
+    id: monitor
+    attributes:
+      label: Monitor and native mode
+      placeholder: MSI MPG 491CQPX, 5120×1440 at 240 Hz, DP-1
+    validations:
+      required: true
+  - type: dropdown
+    id: path
+    attributes:
+      label: Affected path
+      options:
+        - Desktop profile
+        - Steam / Gamescope profile
+        - Panel or bar widget
+        - CLI or installation
+    validations:
+      required: true
+  - type: dropdown
+    id: profile
+    attributes:
+      label: Profile
+      options:
+        - Native / 32:9
+        - 21:9
+        - 16:9
+        - Not profile-specific
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: Include expected behavior, actual behavior, and exact steps to reproduce.
+    validations:
+      required: true
+  - type: textarea
+    id: status
+    attributes:
+      label: Redacted status output
+      description: Paste `omarchy-gaming-display status --json` after removing identifying values.
+      render: json
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant redacted logs
+      description: Include only the smallest useful excerpt.
+      render: shell
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Safety checks
+      options:
+        - label: I restored the native mode before retrying.
+          required: true
+        - label: I did not add or retry a custom modeline.
+          required: true
+        - label: I removed device serials and other personal data.
+          required: true
