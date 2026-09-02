@@ -39,8 +39,8 @@ Click the **32:9** widget on the right side of the Omarchy bar.
 - To return the desktop to full width, choose **32:9**.
 
 For this specific 5120×1440 MSI monitor, desktop 16:9 is available and tested,
-while desktop 21:9 is not advertised by the monitor and therefore remains
-Gamescope-only.
+while the monitor does not offer a 3440×1440 input mode. The 21:9 profile
+therefore remains Gamescope-only.
 
 ## Profiles
 
@@ -58,6 +58,19 @@ The panel labels each desktop profile:
   confirmation.
 - **Gamescope only** — the monitor does not advertise that desktop mode; the
   Steam button remains available.
+
+### Why a 5120×1440 panel may not offer 3440×1440
+
+The panel's physical pixel count and its accepted input modes are different
+things. A monitor tells the graphics stack which timings its scaler and
+firmware support through EDID. This monitor offers 5120×1440 and 2560×1440 to
+Hyprland, but not 3440×1440, so there is no safe 21:9 desktop timing for the
+plugin to test or mark as verified.
+
+Gamescope avoids that restriction. It keeps the DisplayPort signal at the
+monitor-approved native mode, renders the game at 3440×1440, and centers that
+game surface with 840-pixel black bars on each side. The plugin intentionally
+does not inject a custom monitor modeline.
 
 ## Getting real black side bars
 

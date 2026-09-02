@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "astraldrift.gaming-display",
   "name": "Gaming Display",
-  "version": "1.1.1",
+  "version": "1.1.2",
   "author": "AstralDrift",
   "license": "MIT",
   "description": "EDID-safe desktop switching and centered Gamescope profiles for super-ultrawide gaming displays.",
