@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+: "${MOCK_MONITORS:?MOCK_MONITORS is required}"
+
+if [[ ${1:-} == -j && ${2:-} == monitors && ${3:-} == all ]]; then
+  cat "$MOCK_MONITORS"
+  exit 0
+fi
+
+if [[ ${1:-} == dispatch && ${2:-} == focusmonitor ]]; then
+  printf 'focusmonitor %s\n' "${3:-}" >>"${MOCK_HYPR_LOG:-/dev/null}"
+  exit 0
+fi
+
+if [[ ${1:-} == reload ]]; then
+  if [[ -n ${MOCK_MONITORS_INITIAL:-} ]]; then
+    cp "$MOCK_MONITORS_INITIAL" "$MOCK_MONITORS"
+  fi
+  exit 0
+fi
+
+if [[ ${1:-} == keyword && ${2:-} == monitor ]]; then
+  rule=${3:-}
+  IFS=, read -r connector mode position scale <<<"$rule"
+
+  if [[ $mode == transform ]]; then
+    exit 0
+  fi
+
+  if [[ $mode == modeline\ * ]]; then
+    read -r _ clock width _ _ _ height _ <<<"$mode"
+    refresh=${MOCK_CUSTOM_REFRESH:-240}
+  else
+    resolution=${mode%%@*}
+    width=${resolution%x*}
+    height=${resolution#*x}
+    refresh=${mode#*@}
+  fi
+
+  x=${position%x*}
+  y=${position#*x}
+  temp="${MOCK_MONITORS}.tmp"
+  jq \
+    --arg connector "$connector" --argjson width "$width" --argjson height "$height" \
+    --argjson refresh "$refresh" --argjson x "$x" --argjson y "$y" --argjson scale "$scale" \
+    'map(if .name == $connector then . + {width:$width,height:$height,refreshRate:$refresh,x:$x,y:$y,scale:$scale} else . end)' \
+    "$MOCK_MONITORS" >"$temp"
+  mv "$temp" "$MOCK_MONITORS"
+  printf '%s\n' "$rule" >>"${MOCK_HYPR_LOG:-/dev/null}"
+  printf 'ok\n'
+  exit 0
+fi
+
+printf 'unexpected hyprctl arguments: %s\n' "$*" >&2
+exit 2

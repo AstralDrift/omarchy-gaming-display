@@ -1,0 +1,849 @@
+#!/usr/bin/env bash
+
+set -Eeuo pipefail
+
+PROGRAM="omarchy-gaming-display"
+SELF_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+SELF="$SELF_DIR/$(basename -- "${BASH_SOURCE[0]}")"
+
+HYPRCTL=${OGD_HYPRCTL:-hyprctl}
+CVT=${OGD_CVT:-cvt}
+GAMESCOPE=${OGD_GAMESCOPE:-gamescope}
+SYS_CLASS_DRM=${OGD_SYS_CLASS_DRM:-/sys/class/drm}
+CONFIG_HOME=${OGD_CONFIG_HOME:-${XDG_CONFIG_HOME:-$HOME/.config}}
+STATE_HOME=${OGD_STATE_HOME:-${XDG_STATE_HOME:-$HOME/.local/state}}
+BIN_HOME=${OGD_BIN_HOME:-$HOME/.local/bin}
+CONFIG_DIR="$CONFIG_HOME/omarchy"
+CONFIG_FILE=${OGD_CONFIG_FILE:-$CONFIG_DIR/gaming-display.json}
+STATE_DIR=${OGD_STATE_DIR:-$STATE_HOME/omarchy-gaming-display}
+BASE_FILE="$STATE_DIR/base.json"
+CURRENT_FILE="$STATE_DIR/current.json"
+PENDING_FILE="$STATE_DIR/pending.json"
+VERIFIED_FILE="$STATE_DIR/verified.json"
+JSON_MODE=0
+ERROR_EMITTED=0
+ERROR_FILE="$STATE_DIR/.error.$$"
+
+usage() {
+  cat <<'USAGE'
+Usage:
+  omarchy-gaming-display status [--json]
+  omarchy-gaming-display profiles [--json]
+  omarchy-gaming-display desktop test <native|21:9|16:9> [--timeout SECONDS] [--json]
+  omarchy-gaming-display desktop set <native|21:9|16:9> [--json]
+  omarchy-gaming-display desktop confirm [TOKEN] [--json]
+  omarchy-gaming-display desktop revert [TOKEN] [--json]
+  omarchy-gaming-display game <native|21:9|16:9> -- <command...>
+  omarchy-gaming-display steam-option <native|21:9|16:9> [--copy]
+  omarchy-gaming-display setup
+
+Desktop modes are runtime-only. A reduced mode must pass a rollback-protected
+test once for the exact monitor and mode before `desktop set` will apply it.
+USAGE
+}
+
+json_error() {
+  jq -cn --arg error "$1" '{ok:false,error:$error}'
+}
+
+die() {
+  local message=$1
+  local code=${2:-1}
+  mkdir -p -- "$STATE_DIR" 2>/dev/null || true
+  printf '%s\n' "$message" >"$ERROR_FILE" 2>/dev/null || true
+  if ((JSON_MODE)); then
+    if ((BASH_SUBSHELL == 0)); then
+      json_error "$message"
+      ERROR_EMITTED=1
+    fi
+  else
+    printf '%s: %s\n' "$PROGRAM" "$message" >&2
+  fi
+  exit "$code"
+}
+
+finish_on_exit() {
+  local code=$?
+  if ((code != 0 && JSON_MODE && !ERROR_EMITTED && BASH_SUBSHELL == 0)); then
+    local message="operation failed"
+    [[ -r $ERROR_FILE ]] && message=$(<"$ERROR_FILE")
+    json_error "$message"
+  fi
+  rm -f -- "$ERROR_FILE" 2>/dev/null || true
+  return "$code"
+}
+
+trap finish_on_exit EXIT
+
+need() {
+  command -v "$1" >/dev/null 2>&1 || die "required command not found: $1" 127
+}
+
+ensure_dirs() {
+  mkdir -p -- "$CONFIG_DIR" "$STATE_DIR"
+}
+
+atomic_write() {
+  local path=$1
+  local contents=$2
+  local temp
+  temp=$(mktemp "$STATE_DIR/.write.XXXXXX")
+  printf '%s\n' "$contents" >"$temp"
+  chmod 600 "$temp"
+  mv -f -- "$temp" "$path"
+}
+
+default_config() {
+  jq -cn '{
+    version: 1,
+    monitor: {connector: "", fingerprint: ""},
+    rollbackSeconds: 15,
+    fallbackRefreshRates: [240, 120, 60],
+    profiles: {
+      "21:9": {width: 0, height: 0, maxRefreshHz: 0},
+      "16:9": {width: 0, height: 0, maxRefreshHz: 0}
+    },
+    gamescope: {
+      fullscreen: true,
+      scaler: "fit",
+      forceGrabCursor: false
+    }
+  }'
+}
+
+ensure_config() {
+  ensure_dirs
+  if [[ ! -e $CONFIG_FILE ]]; then
+    atomic_write "$CONFIG_FILE" "$(default_config)"
+  fi
+  jq -e '
+    .version == 1
+    and (.monitor | type == "object")
+    and (.monitor.connector | type == "string")
+    and (.monitor.fingerprint | type == "string")
+    and (.rollbackSeconds | type == "number") and .rollbackSeconds >= 5 and .rollbackSeconds <= 120
+    and (.fallbackRefreshRates | type == "array")
+    and all(.fallbackRefreshRates[]; (type == "number") and . > 0)
+    and (.profiles | type == "object")
+    and all(.profiles["21:9"].width, .profiles["21:9"].height, .profiles["21:9"].maxRefreshHz,
+            .profiles["16:9"].width, .profiles["16:9"].height, .profiles["16:9"].maxRefreshHz;
+            (type == "number") and . >= 0)
+    and (.gamescope.fullscreen | type == "boolean")
+    and (.gamescope.forceGrabCursor | type == "boolean")
+    and (.gamescope.scaler as $scaler | ["auto", "fit", "fill", "stretch", "integer"] | index($scaler) != null)
+  ' \
+    "$CONFIG_FILE" >/dev/null 2>&1 || die "invalid configuration: $CONFIG_FILE"
+}
+
+load_config() {
+  ensure_config
+  jq -s '.[0] * .[1]' <(default_config) "$CONFIG_FILE"
+}
+
+hypr_monitors() {
+  need "$HYPRCTL"
+  local value
+  value=$($HYPRCTL -j monitors all 2>/dev/null) || die "cannot query the live Hyprland session"
+  jq -e 'type == "array"' <<<"$value" >/dev/null 2>&1 || die "Hyprland returned invalid monitor data"
+  printf '%s\n' "$value"
+}
+
+native_mode_json() {
+  local monitor=$1
+  jq -c '
+    [(.availableModes // [])[]
+      | capture("^(?<width>[0-9]+)x(?<height>[0-9]+)@(?<refresh>[0-9.]+)Hz$")
+      | {width:(.width|tonumber), height:(.height|tonumber), refresh:(.refresh|tonumber),
+         mode:(.width + "x" + .height + "@" + .refresh)}]
+    | if length == 0 then
+        {width:.width, height:.height, refresh:.refreshRate,
+         mode:((.width|tostring) + "x" + (.height|tostring) + "@" + (.refreshRate|tostring))}
+      else sort_by(.width, .height, .refresh) | last end
+  ' <<<"$monitor"
+}
+
+monitor_fingerprint() {
+  local monitor=$1
+  local connector edid path native description
+  connector=$(jq -r '.name' <<<"$monitor")
+  shopt -s nullglob
+  for path in "$SYS_CLASS_DRM"/card*-"$connector"/edid; do
+    if [[ -s $path ]]; then
+      sha256sum "$path" | awk '{print $1}'
+      shopt -u nullglob
+      return 0
+    fi
+  done
+  shopt -u nullglob
+  native=$(native_mode_json "$monitor")
+  description=$(jq -r '.description // ((.make // "") + " " + (.model // "") + " " + (.serial // ""))' <<<"$monitor")
+  printf '%s|%s|%s\n' "$description" "$(jq -r '.width' <<<"$native")" "$(jq -r '.height' <<<"$native")" \
+    | sha256sum | awk '{print $1}'
+}
+
+select_target() {
+  local monitors=$1
+  local config connector wanted_fingerprint monitor fingerprint
+  config=$(load_config)
+  connector=$(jq -r '.monitor.connector // ""' <<<"$config")
+  wanted_fingerprint=$(jq -r '.monitor.fingerprint // ""' <<<"$config")
+
+  if [[ -n $connector ]]; then
+    monitor=$(jq -c --arg name "$connector" '[.[] | select(.disabled != true and .name == $name)][0] // empty' <<<"$monitors")
+    [[ -n $monitor ]] || die "configured monitor '$connector' is not connected and enabled"
+    printf '%s\n' "$monitor"
+    return 0
+  fi
+
+  if [[ -n $wanted_fingerprint ]]; then
+    while IFS= read -r monitor; do
+      [[ -n $monitor ]] || continue
+      fingerprint=$(monitor_fingerprint "$monitor")
+      if [[ $fingerprint == "$wanted_fingerprint" ]]; then
+        printf '%s\n' "$monitor"
+        return 0
+      fi
+    done < <(jq -c '.[] | select(.disabled != true)' <<<"$monitors")
+    die "the configured monitor fingerprint is not connected"
+  fi
+
+  # Once a native baseline exists, keep following that output even while a
+  # reduced profile makes its live aspect ratio look merely ultrawide. If the
+  # connector name changed after a dock/GPU reorder, fall back to the stored
+  # EDID fingerprint before running fresh autodetection.
+  if [[ -r $BASE_FILE ]]; then
+    connector=$(jq -r '.connector // ""' "$BASE_FILE" 2>/dev/null || true)
+    if [[ -n $connector ]]; then
+      monitor=$(jq -c --arg name "$connector" '[.[] | select(.disabled != true and .name == $name)][0] // empty' <<<"$monitors")
+      if [[ -n $monitor ]]; then
+        printf '%s\n' "$monitor"
+        return 0
+      fi
+    fi
+    wanted_fingerprint=$(jq -r '.fingerprint // ""' "$BASE_FILE" 2>/dev/null || true)
+    if [[ -n $wanted_fingerprint ]]; then
+      while IFS= read -r monitor; do
+        [[ -n $monitor ]] || continue
+        fingerprint=$(monitor_fingerprint "$monitor")
+        if [[ $fingerprint == "$wanted_fingerprint" ]]; then
+          printf '%s\n' "$monitor"
+          return 0
+        fi
+      done < <(jq -c '.[] | select(.disabled != true)' <<<"$monitors")
+    fi
+  fi
+
+  monitor=$(jq -c '
+    [.[] | select(.disabled != true)
+      | . as $monitor
+      | ([($monitor.availableModes // [])[]
+          | capture("^(?<width>[0-9]+)x(?<height>[0-9]+)@(?<refresh>[0-9.]+)Hz$")
+          | {width:(.width|tonumber),height:(.height|tonumber),refresh:(.refresh|tonumber)}]
+         | if length == 0 then {width:$monitor.width,height:$monitor.height,refresh:$monitor.refreshRate}
+           else sort_by(.width, .height, .refresh) | last end) as $native
+      | select($native.height > 0 and ($native.width / $native.height) >= 2.5)
+      | {monitor:$monitor,aspect:($native.width / $native.height),area:($native.width * $native.height)}]
+    | if length == 0 then empty else sort_by(.aspect, .area) | last.monitor end
+  ' <<<"$monitors")
+  [[ -n $monitor ]] || die "no enabled super-ultrawide monitor was detected; set monitor.connector in $CONFIG_FILE"
+  printf '%s\n' "$monitor"
+}
+
+round_even() {
+  local value=$1
+  if ((value % 2)); then
+    value=$((value + 1))
+  fi
+  printf '%s\n' "$value"
+}
+
+profile_spec() {
+  local profile=$1
+  local monitor=$2
+  local config native native_width native_height native_refresh width height max_refresh label
+  config=$(load_config)
+  native=$(native_mode_json "$monitor")
+  native_width=$(jq -r '.width' <<<"$native")
+  native_height=$(jq -r '.height' <<<"$native")
+  native_refresh=$(jq -r '.refresh' <<<"$native")
+
+  case "$profile" in
+  native)
+    width=$native_width
+    height=$native_height
+    max_refresh=$native_refresh
+    label="Native"
+    ;;
+  21:9)
+    width=$(jq -r '.profiles["21:9"].width // 0' <<<"$config")
+    height=$(jq -r '.profiles["21:9"].height // 0' <<<"$config")
+    max_refresh=$(jq -r '.profiles["21:9"].maxRefreshHz // 0' <<<"$config")
+    ((height > 0)) || height=$native_height
+    if ((width <= 0)); then
+      case "$height" in
+      1080) width=2560 ;;
+      1440) width=3440 ;;
+      1600) width=3840 ;;
+      *) width=$(round_even $(((height * 43 + 9) / 18))) ;;
+      esac
+    fi
+    awk -v value="$max_refresh" 'BEGIN { exit !(value <= 0) }' && max_refresh=$native_refresh
+    label="21:9"
+    ;;
+  16:9)
+    width=$(jq -r '.profiles["16:9"].width // 0' <<<"$config")
+    height=$(jq -r '.profiles["16:9"].height // 0' <<<"$config")
+    max_refresh=$(jq -r '.profiles["16:9"].maxRefreshHz // 0' <<<"$config")
+    ((height > 0)) || height=$native_height
+    ((width > 0)) || width=$(round_even $(((height * 16 + 4) / 9)))
+    awk -v value="$max_refresh" 'BEGIN { exit !(value <= 0) }' && max_refresh=$native_refresh
+    label="16:9"
+    ;;
+  *) die "unknown profile '$profile'" 2 ;;
+  esac
+
+  jq -cn \
+    --arg id "$profile" --arg label "$label" \
+    --argjson width "$width" --argjson height "$height" --argjson maxRefresh "$max_refresh" \
+    '{id:$id,label:$label,width:$width,height:$height,maxRefreshHz:$maxRefresh}'
+}
+
+mode_candidates() {
+  local profile=$1
+  local monitor=$2
+  local spec width height max_refresh advertised mode refresh config rate cvt_output line remainder
+  spec=$(profile_spec "$profile" "$monitor")
+  width=$(jq -r '.width' <<<"$spec")
+  height=$(jq -r '.height' <<<"$spec")
+  max_refresh=$(jq -r '.maxRefreshHz' <<<"$spec")
+
+  if [[ $profile == native ]]; then
+    mode=$(native_mode_json "$monitor")
+    printf 'advertised\t%s\t%s\n' "$(jq -r '.mode' <<<"$mode")" "$(jq -r '.refresh' <<<"$mode")"
+    return 0
+  fi
+
+  advertised=$(jq -r --argjson width "$width" --argjson height "$height" --argjson max "$max_refresh" '
+    [(.availableModes // [])[]
+      | capture("^(?<width>[0-9]+)x(?<height>[0-9]+)@(?<refresh>[0-9.]+)Hz$")
+      | select((.width|tonumber) == $width and (.height|tonumber) == $height and (.refresh|tonumber) <= ($max + 0.51))
+      | {mode:(.width + "x" + .height + "@" + .refresh), refresh:(.refresh|tonumber)}]
+    | sort_by(.refresh) | reverse[] | [.mode, (.refresh|tostring)] | @tsv
+  ' <<<"$monitor")
+  if [[ -n $advertised ]]; then
+    while IFS=$'\t' read -r mode refresh; do
+      [[ -n $mode ]] && printf 'advertised\t%s\t%s\n' "$mode" "$refresh"
+    done <<<"$advertised"
+    return 0
+  fi
+
+  need "$CVT"
+  config=$(load_config)
+  while IFS= read -r rate; do
+    [[ -n $rate ]] || continue
+    awk -v rate="$rate" -v max="$max_refresh" 'BEGIN { exit !(rate <= max + 0.51) }' || continue
+    cvt_output=$($CVT -r "$width" "$height" "$rate" 2>/dev/null || true)
+    line=$(awk '/^Modeline / { print; exit }' <<<"$cvt_output")
+    [[ -n $line ]] || continue
+    remainder=${line#*\" }
+    [[ $remainder != "$line" ]] || continue
+    remainder=${remainder# }
+    printf 'custom\tmodeline %s\t%s\n' "$remainder" "$rate"
+  done < <(
+    {
+      printf '%s\n' "$(printf '%.0f' "$max_refresh")"
+      jq -r '.fallbackRefreshRates[]' <<<"$config"
+    } | awk '!seen[$0]++'
+  )
+}
+
+monitor_record() {
+  local monitor=$1
+  local mode=${2:-}
+  local connector width height refresh
+  connector=$(jq -r '.name' <<<"$monitor")
+  width=$(jq -r '.width' <<<"$monitor")
+  height=$(jq -r '.height' <<<"$monitor")
+  refresh=$(jq -r '.refreshRate' <<<"$monitor")
+
+  if [[ -z $mode && -r $CURRENT_FILE ]]; then
+    mode=$(jq -r --arg connector "$connector" --argjson width "$width" --argjson height "$height" '
+      if .connector == $connector and .width == $width and .height == $height then .mode // "" else "" end
+    ' "$CURRENT_FILE" 2>/dev/null || true)
+  fi
+  [[ -n $mode ]] || mode=$(printf '%sx%s@%.2f' "$width" "$height" "$refresh")
+
+  jq -cn \
+    --arg connector "$connector" --arg mode "$mode" \
+    --argjson width "$width" --argjson height "$height" \
+    --argjson refresh "$refresh" \
+    --argjson x "$(jq -r '.x' <<<"$monitor")" --argjson y "$(jq -r '.y' <<<"$monitor")" \
+    --argjson scale "$(jq -r '.scale' <<<"$monitor")" \
+    --argjson transform "$(jq -r '.transform // 0' <<<"$monitor")" \
+    '{connector:$connector,mode:$mode,width:$width,height:$height,refresh:$refresh,
+      x:$x,y:$y,scale:$scale,transform:$transform}'
+}
+
+save_current() {
+  atomic_write "$CURRENT_FILE" "$1"
+}
+
+ensure_base() {
+  local monitor=$1
+  local native fingerprint record
+  if [[ -r $BASE_FILE ]]; then
+    printf '%s\n' "$(<"$BASE_FILE")"
+    return 0
+  fi
+  native=$(native_mode_json "$monitor")
+  if [[ $(jq -r '.width' <<<"$monitor") != $(jq -r '.width' <<<"$native") ]] \
+    || [[ $(jq -r '.height' <<<"$monitor") != $(jq -r '.height' <<<"$native") ]]; then
+    die "cannot establish the native baseline while the target is already reduced; restore its configured native mode first"
+  fi
+  fingerprint=$(monitor_fingerprint "$monitor")
+  record=$(monitor_record "$monitor" "$(jq -r '.mode' <<<"$native")")
+  record=$(jq -c --arg fingerprint "$fingerprint" '. + {fingerprint:$fingerprint}' <<<"$record")
+  atomic_write "$BASE_FILE" "$record"
+  save_current "$record"
+  printf '%s\n' "$record"
+}
+
+target_position_for_width() {
+  local base=$1
+  local width=$2
+  jq -nr --argjson x "$(jq -r '.x' <<<"$base")" \
+    --argjson baseWidth "$(jq -r '.width' <<<"$base")" --argjson width "$width" \
+    '($x + ($baseWidth / 2) - ($width / 2)) | round'
+}
+
+apply_record() {
+  local record=$1
+  local connector mode width height x y scale transform rule response live
+  connector=$(jq -r '.connector' <<<"$record")
+  mode=$(jq -r '.mode' <<<"$record")
+  width=$(jq -r '.width' <<<"$record")
+  height=$(jq -r '.height' <<<"$record")
+  x=$(jq -r '.x' <<<"$record")
+  y=$(jq -r '.y' <<<"$record")
+  scale=$(jq -r '.scale' <<<"$record")
+  transform=$(jq -r '.transform // 0' <<<"$record")
+  rule="$connector,$mode,${x}x${y},$scale"
+
+  response=$($HYPRCTL keyword monitor "$rule" 2>&1) || {
+    printf '%s\n' "$response" >&2
+    return 1
+  }
+  if [[ $transform != 0 ]]; then
+    $HYPRCTL keyword monitor "$connector,transform,$transform" >/dev/null 2>&1 || return 1
+  fi
+  sleep 0.6
+  live=$(hypr_monitors)
+  jq -e --arg connector "$connector" --argjson width "$width" --argjson height "$height" --argjson refresh "$(jq -r '.refresh' <<<"$record")" '
+    any(.[];
+      .name == $connector and .disabled != true and .width == $width and .height == $height
+      and ((if .refreshRate > $refresh then .refreshRate - $refresh else $refresh - .refreshRate end) < 1.0))
+  ' <<<"$live" >/dev/null || return 1
+  save_current "$record"
+}
+
+profile_record() {
+  local profile=$1
+  local monitor=$2
+  local mode=$3
+  local refresh=$4
+  local base spec width height x
+  base=$(ensure_base "$monitor")
+  spec=$(profile_spec "$profile" "$monitor")
+  width=$(jq -r '.width' <<<"$spec")
+  height=$(jq -r '.height' <<<"$spec")
+  x=$(target_position_for_width "$base" "$width")
+  jq -cn \
+    --arg connector "$(jq -r '.name' <<<"$monitor")" --arg mode "$mode" --arg profile "$profile" \
+    --argjson width "$width" --argjson height "$height" --argjson refresh "$refresh" \
+    --argjson x "$x" --argjson y "$(jq -r '.y' <<<"$base")" \
+    --argjson scale "$(jq -r '.scale' <<<"$base")" --argjson transform "$(jq -r '.transform' <<<"$base")" \
+    '{connector:$connector,mode:$mode,profile:$profile,width:$width,height:$height,
+      refresh:$refresh,x:$x,y:$y,scale:$scale,transform:$transform}'
+}
+
+verification_key() {
+  printf '%s|%s|%s\n' "$1" "$2" "$3" | sha256sum | awk '{print $1}'
+}
+
+is_verified() {
+  local fingerprint=$1 profile=$2 mode=$3 key
+  [[ -r $VERIFIED_FILE ]] || return 1
+  key=$(verification_key "$fingerprint" "$profile" "$mode")
+  jq -e --arg key "$key" '.entries[$key] != null' "$VERIFIED_FILE" >/dev/null 2>&1
+}
+
+mark_verified() {
+  local fingerprint=$1 profile=$2 mode=$3 connector=$4 key current now
+  key=$(verification_key "$fingerprint" "$profile" "$mode")
+  now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  if [[ -r $VERIFIED_FILE ]]; then
+    current=$(<"$VERIFIED_FILE")
+  else
+    current='{"version":1,"entries":{}}'
+  fi
+  current=$(jq -c \
+    --arg key "$key" --arg fingerprint "$fingerprint" --arg profile "$profile" \
+    --arg mode "$mode" --arg connector "$connector" --arg verifiedAt "$now" \
+    '.entries[$key] = {fingerprint:$fingerprint,profile:$profile,mode:$mode,connector:$connector,verifiedAt:$verifiedAt}' \
+    <<<"$current")
+  atomic_write "$VERIFIED_FILE" "$current"
+}
+
+new_token() {
+  printf '%s' "$(date +%s%N)-$$-$RANDOM" | sha256sum | awk '{print substr($1,1,24)}'
+}
+
+pending_token() {
+  [[ -r $PENDING_FILE ]] || return 1
+  jq -r '.token // ""' "$PENDING_FILE"
+}
+
+start_watchdog() {
+  local token=$1 timeout=$2
+  [[ ${OGD_DISABLE_WATCHDOG:-0} == 1 ]] && return 0
+  nohup "$SELF" _watchdog "$token" "$timeout" >/dev/null 2>&1 &
+}
+
+revert_pending_internal() {
+  local requested_token=${1:-}
+  local pending token prior
+  [[ -r $PENDING_FILE ]] || return 0
+  pending=$(<"$PENDING_FILE")
+  token=$(jq -r '.token' <<<"$pending")
+  [[ -z $requested_token || $requested_token == "$token" ]] || return 3
+  prior=$(jq -c '.prior' <<<"$pending")
+  rm -f -- "$PENDING_FILE"
+  if ! apply_record "$prior"; then
+    $HYPRCTL reload >/dev/null 2>&1 || true
+    return 1
+  fi
+}
+
+lock_mutation() {
+  ensure_dirs
+  exec 9>"$STATE_DIR/lock"
+  flock -w 5 9 || die "another display operation is already running"
+}
+
+desktop_test() {
+  local profile=$1 timeout=$2
+  [[ $profile != native ]] || die "the native profile does not require testing" 2
+  lock_mutation
+  [[ -r $PENDING_FILE ]] && revert_pending_internal "" || true
+
+  local monitors monitor fingerprint prior kind mode refresh record token expires pending
+  monitors=$(hypr_monitors)
+  monitor=$(select_target "$monitors")
+  fingerprint=$(monitor_fingerprint "$monitor")
+  ensure_base "$monitor" >/dev/null
+  prior=$(monitor_record "$monitor")
+
+  while IFS=$'\t' read -r kind mode refresh; do
+    [[ -n $mode ]] || continue
+    record=$(profile_record "$profile" "$monitor" "$mode" "$refresh")
+    token=$(new_token)
+    expires=$(($(date +%s) + timeout))
+    pending=$(jq -cn \
+      --arg token "$token" --arg profile "$profile" --arg fingerprint "$fingerprint" --arg kind "$kind" \
+      --argjson expiresAt "$expires" --argjson timeout "$timeout" \
+      --argjson prior "$prior" --argjson candidate "$record" \
+      '{version:1,token:$token,profile:$profile,fingerprint:$fingerprint,kind:$kind,
+        expiresAt:$expiresAt,timeout:$timeout,prior:$prior,candidate:$candidate}')
+    atomic_write "$PENDING_FILE" "$pending"
+    start_watchdog "$token" "$timeout"
+    if apply_record "$record"; then
+      jq -cn --arg token "$token" --arg profile "$profile" --arg kind "$kind" \
+        --arg mode "$mode" --argjson refresh "$refresh" --argjson expiresAt "$expires" \
+        '{ok:true,testing:true,token:$token,profile:$profile,kind:$kind,mode:$mode,
+          refreshHz:$refresh,expiresAt:$expiresAt}'
+      return 0
+    fi
+    revert_pending_internal "$token" || true
+  done < <(mode_candidates "$profile" "$monitor")
+  die "no usable mode candidate could be applied for $profile"
+}
+
+desktop_confirm() {
+  local requested_token=${1:-}
+  lock_mutation
+  [[ -r $PENDING_FILE ]] || die "there is no display test awaiting confirmation" 3
+  local pending token profile fingerprint mode connector
+  pending=$(<"$PENDING_FILE")
+  token=$(jq -r '.token' <<<"$pending")
+  [[ -z $requested_token || $requested_token == "$token" ]] || die "confirmation token does not match the active test" 3
+  profile=$(jq -r '.profile' <<<"$pending")
+  fingerprint=$(jq -r '.fingerprint' <<<"$pending")
+  mode=$(jq -r '.candidate.mode' <<<"$pending")
+  connector=$(jq -r '.candidate.connector' <<<"$pending")
+  mark_verified "$fingerprint" "$profile" "$mode" "$connector"
+  rm -f -- "$PENDING_FILE"
+  jq -cn --arg profile "$profile" --arg mode "$mode" '{ok:true,confirmed:true,profile:$profile,mode:$mode}'
+}
+
+desktop_revert() {
+  local token=${1:-}
+  lock_mutation
+  [[ -r $PENDING_FILE ]] || die "there is no display test to revert" 3
+  revert_pending_internal "$token" || die "failed to restore the previous display mode"
+  jq -cn '{ok:true,reverted:true}'
+}
+
+desktop_set() {
+  local profile=$1
+  lock_mutation
+  [[ -r $PENDING_FILE ]] && revert_pending_internal "" || true
+  local monitors monitor base fingerprint kind mode refresh record
+  monitors=$(hypr_monitors)
+  monitor=$(select_target "$monitors")
+  base=$(ensure_base "$monitor")
+  fingerprint=$(monitor_fingerprint "$monitor")
+
+  if [[ $profile == native ]]; then
+    apply_record "$base" || die "failed to restore the native display profile"
+    jq -cn --arg profile native --arg mode "$(jq -r '.mode' <<<"$base")" '{ok:true,profile:$profile,mode:$mode}'
+    return 0
+  fi
+
+  while IFS=$'\t' read -r kind mode refresh; do
+    [[ -n $mode ]] || continue
+    is_verified "$fingerprint" "$profile" "$mode" || continue
+    record=$(profile_record "$profile" "$monitor" "$mode" "$refresh")
+    if apply_record "$record"; then
+      jq -cn --arg profile "$profile" --arg mode "$mode" --arg kind "$kind" --argjson refresh "$refresh" \
+        '{ok:true,profile:$profile,mode:$mode,kind:$kind,refreshHz:$refresh}'
+      return 0
+    fi
+  done < <(mode_candidates "$profile" "$monitor")
+  die "profile '$profile' has no verified usable mode; run: $PROGRAM desktop test $profile" 4
+}
+
+profile_status_json() {
+  local profile=$1 monitor=$2 fingerprint=$3
+  local spec verified=false available=false first_mode="" first_kind="" mode kind refresh
+  spec=$(profile_spec "$profile" "$monitor")
+  while IFS=$'\t' read -r kind mode refresh; do
+    [[ -n $mode ]] || continue
+    available=true
+    [[ -n $first_mode ]] || {
+      first_mode=$mode
+      first_kind=$kind
+    }
+    if [[ $profile == native ]] || is_verified "$fingerprint" "$profile" "$mode"; then
+      verified=true
+    fi
+  done < <(mode_candidates "$profile" "$monitor")
+  jq -c --argjson available "$available" --argjson verified "$verified" \
+    --arg mode "$first_mode" --arg kind "$first_kind" \
+    '. + {available:$available,verified:$verified,preferredMode:$mode,modeKind:$kind}' <<<"$spec"
+}
+
+status_json() {
+  local monitors monitor fingerprint native active pending='null' now remaining profiles='[]' spec profile current_width current_height
+  monitors=$(hypr_monitors)
+  monitor=$(select_target "$monitors")
+  fingerprint=$(monitor_fingerprint "$monitor")
+  native=$(native_mode_json "$monitor")
+  current_width=$(jq -r '.width' <<<"$monitor")
+  current_height=$(jq -r '.height' <<<"$monitor")
+  active="custom"
+  for profile in native 21:9 16:9; do
+    spec=$(profile_spec "$profile" "$monitor")
+    if [[ $(jq -r '.width' <<<"$spec") == "$current_width" && $(jq -r '.height' <<<"$spec") == "$current_height" ]]; then
+      active=$profile
+    fi
+    profiles=$(jq -c --argjson item "$(profile_status_json "$profile" "$monitor" "$fingerprint")" '. + [$item]' <<<"$profiles")
+  done
+
+  if [[ -r $PENDING_FILE ]]; then
+    now=$(date +%s)
+    pending=$(jq -c --argjson now "$now" '. + {remainingSeconds:([0, (.expiresAt - $now)] | max)}' "$PENDING_FILE" 2>/dev/null || printf 'null')
+  fi
+
+  jq -cn \
+    --arg activeProfile "$active" --arg fingerprint "$fingerprint" \
+    --argjson monitor "$monitor" --argjson native "$native" --argjson profiles "$profiles" --argjson pending "$pending" \
+    '{ok:true,target:{connector:$monitor.name,description:$monitor.description,fingerprint:$fingerprint,
+       width:$monitor.width,height:$monitor.height,refreshHz:$monitor.refreshRate,x:$monitor.x,y:$monitor.y,
+       scale:$monitor.scale},native:$native,activeProfile:$activeProfile,profiles:$profiles,pending:$pending}'
+}
+
+run_game() {
+  local profile=$1
+  shift
+  [[ ${1:-} == -- ]] && shift
+  (($# > 0)) || die "game requires a command after --" 2
+  local monitors monitor spec native width height output_width output_height refresh config fullscreen scaler force_grab
+  monitors=$(hypr_monitors)
+  monitor=$(select_target "$monitors")
+  spec=$(profile_spec "$profile" "$monitor")
+  native=$(native_mode_json "$monitor")
+  width=$(jq -r '.width' <<<"$spec")
+  height=$(jq -r '.height' <<<"$spec")
+  output_width=$(jq -r '.width' <<<"$native")
+  output_height=$(jq -r '.height' <<<"$native")
+  refresh=$(printf '%.0f' "$(jq -r '.maxRefreshHz' <<<"$spec")")
+  $HYPRCTL dispatch focusmonitor "$(jq -r '.name' <<<"$monitor")" >/dev/null 2>&1 || true
+
+  if [[ $profile == native ]]; then
+    exec "$@"
+  fi
+
+  need "$GAMESCOPE"
+  config=$(load_config)
+  fullscreen=$(jq -r '.gamescope.fullscreen' <<<"$config")
+  scaler=$(jq -r '.gamescope.scaler' <<<"$config")
+  force_grab=$(jq -r '.gamescope.forceGrabCursor' <<<"$config")
+  local -a args=(-w "$width" -h "$height" -W "$output_width" -H "$output_height" -r "$refresh" -S "$scaler")
+  [[ $fullscreen == true ]] && args+=(-f) || args+=(-b)
+  [[ $force_grab == true ]] && args+=(--force-grab-cursor)
+  exec "$GAMESCOPE" "${args[@]}" -- "$@"
+}
+
+steam_option() {
+  local profile=$1 copy=${2:-false} launcher quoted_profile option
+  case "$profile" in native | 21:9 | 16:9) ;; *) die "unknown profile '$profile'" 2 ;; esac
+  launcher=$SELF
+  if command -v "$PROGRAM" >/dev/null 2>&1; then
+    launcher=$PROGRAM
+  fi
+  printf -v launcher '%q' "$launcher"
+  printf -v quoted_profile '%q' "$profile"
+  option="$launcher game $quoted_profile -- %command%"
+  if [[ $copy == true ]]; then
+    need wl-copy
+    printf '%s' "$option" | wl-copy
+  fi
+  printf '%s\n' "$option"
+}
+
+setup_cli() {
+  ensure_dirs
+  mkdir -p -- "$BIN_HOME"
+  local target="$BIN_HOME/$PROGRAM" resolved=""
+  if [[ -e $target || -L $target ]]; then
+    resolved=$(readlink -f -- "$target" 2>/dev/null || true)
+    [[ $resolved == "$SELF" ]] || die "$target already exists and points somewhere else"
+    printf 'Already installed: %s\n' "$target"
+    return 0
+  fi
+  ln -s -- "$SELF" "$target"
+  printf 'Installed: %s -> %s\n' "$target" "$SELF"
+}
+
+watchdog() {
+  local token=$1 timeout=$2
+  sleep "$timeout"
+  ensure_dirs
+  exec 9>"$STATE_DIR/lock"
+  flock -w 5 9 || exit 0
+  [[ -r $PENDING_FILE ]] || exit 0
+  [[ $(jq -r '.token // ""' "$PENDING_FILE" 2>/dev/null) == "$token" ]] || exit 0
+  revert_pending_internal "$token" || exit 1
+}
+
+parse_common_flag() {
+  if [[ ${1:-} == --json ]]; then
+    JSON_MODE=1
+    return 0
+  fi
+  return 1
+}
+
+main() {
+  need jq
+  local arg
+  for arg in "$@"; do
+    [[ $arg == --json ]] && JSON_MODE=1
+  done
+  ensure_config
+  local command=${1:-help}
+  shift || true
+
+  case "$command" in
+  status)
+    [[ ${1:-} == --json ]] && JSON_MODE=1
+    status_json
+    ;;
+  profiles)
+    [[ ${1:-} == --json ]] && JSON_MODE=1
+    status_json | jq '{ok,target,native,activeProfile,profiles,pending}'
+    ;;
+  desktop)
+    local action=${1:-}
+    shift || true
+    case "$action" in
+    test)
+      local profile=${1:-} timeout=""
+      [[ -n $profile ]] || die "desktop test requires a profile" 2
+      shift
+      while (($#)); do
+        case "$1" in
+        --timeout) timeout=${2:-}; shift 2 ;;
+        --json) JSON_MODE=1; shift ;;
+        *) die "unknown argument: $1" 2 ;;
+        esac
+      done
+      [[ -n $timeout ]] || timeout=$(jq -r '.rollbackSeconds' <<<"$(load_config)")
+      [[ $timeout =~ ^[0-9]+$ ]] && ((timeout >= 5 && timeout <= 120)) || die "timeout must be 5-120 seconds" 2
+      desktop_test "$profile" "$timeout"
+      ;;
+    set)
+      local profile=${1:-}
+      [[ -n $profile ]] || die "desktop set requires a profile" 2
+      shift
+      [[ ${1:-} == --json ]] && JSON_MODE=1 && shift
+      (($# == 0)) || die "unknown argument: $1" 2
+      desktop_set "$profile"
+      ;;
+    confirm)
+      local token=""
+      while (($#)); do
+        if parse_common_flag "$1"; then shift
+        elif [[ -z $token ]]; then token=$1; shift
+        else die "unknown argument: $1" 2
+        fi
+      done
+      desktop_confirm "$token"
+      ;;
+    revert)
+      local token=""
+      while (($#)); do
+        if parse_common_flag "$1"; then shift
+        elif [[ -z $token ]]; then token=$1; shift
+        else die "unknown argument: $1" 2
+        fi
+      done
+      desktop_revert "$token"
+      ;;
+    *) die "desktop requires test, set, confirm, or revert" 2 ;;
+    esac
+    ;;
+  game)
+    local profile=${1:-}
+    [[ -n $profile ]] || die "game requires a profile" 2
+    shift
+    run_game "$profile" "$@"
+    ;;
+  steam-option)
+    local profile=${1:-} copy=false
+    [[ -n $profile ]] || die "steam-option requires a profile" 2
+    shift
+    [[ ${1:-} == --copy ]] && copy=true && shift
+    (($# == 0)) || die "unknown argument: $1" 2
+    steam_option "$profile" "$copy"
+    ;;
+  setup) setup_cli ;;
+  _watchdog)
+    watchdog "${1:?token required}" "${2:?timeout required}"
+    ;;
+  help | -h | --help) usage ;;
+  *) usage >&2; die "unknown command '$command'" 2 ;;
+  esac
+}
+
+main "$@"

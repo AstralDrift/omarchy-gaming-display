@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+[[ ${1:-} == -r ]] || exit 2
+width=${2:?}
+height=${3:?}
+refresh=${4:?}
+
+printf '# %sx%s %.2f Hz (CVT)\n' "$width" "$height" "$refresh"
+printf 'Modeline "%sx%sR"  1398.50  %s %s %s %s  %s %s %s %s +hsync -vsync\n' \
+  "$width" "$height" "$width" "$((width + 48))" "$((width + 80))" "$((width + 160))" \
+  "$height" "$((height + 3))" "$((height + 13))" "$((height + 179))"

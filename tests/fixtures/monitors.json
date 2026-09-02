@@ -1,0 +1,49 @@
+[
+  {
+    "id": 0,
+    "name": "DP-2",
+    "description": "AOC U34G2G4R3",
+    "make": "AOC",
+    "model": "U34G2G4R3",
+    "serial": "AOC-TEST",
+    "width": 3440,
+    "height": 1440,
+    "refreshRate": 144.001,
+    "x": 840,
+    "y": 0,
+    "scale": 1,
+    "transform": 0,
+    "focused": true,
+    "disabled": false,
+    "availableModes": [
+      "3440x1440@144.00Hz",
+      "3440x1440@120.00Hz",
+      "3440x1440@59.97Hz"
+    ]
+  },
+  {
+    "id": 1,
+    "name": "DP-1",
+    "description": "Microstep MPG491CX OLED",
+    "make": "Microstep",
+    "model": "MPG491CX OLED",
+    "serial": "MSI-TEST",
+    "width": 5120,
+    "height": 1440,
+    "refreshRate": 240.0,
+    "x": 0,
+    "y": 1440,
+    "scale": 1,
+    "transform": 0,
+    "focused": false,
+    "disabled": false,
+    "availableModes": [
+      "5120x1440@240.00Hz",
+      "5120x1440@120.00Hz",
+      "5120x1440@59.98Hz",
+      "2560x1440@240.25Hz",
+      "2560x1440@120.00Hz",
+      "2560x1440@59.95Hz"
+    ]
+  }
+]

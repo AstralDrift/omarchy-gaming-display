@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+cat >"${MOCK_CLIPBOARD:?MOCK_CLIPBOARD is required}"
