@@ -3,7 +3,7 @@
 set -Eeuo pipefail
 
 PROGRAM="omarchy-gaming-display"
-VERSION="1.1.0"
+VERSION="1.1.1"
 SELF_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 SELF="$SELF_DIR/$(basename -- "${BASH_SOURCE[0]}")"
 

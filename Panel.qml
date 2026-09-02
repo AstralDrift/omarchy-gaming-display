@@ -27,6 +27,7 @@ Panel {
   property bool busy: false
   property string pendingToken: ""
   property int pendingRemaining: 0
+  property string copiedProfile: ""
 
   function open() {
     refresh()
@@ -77,11 +78,19 @@ Panel {
     return String(data.width) + "×" + String(data.height)
   }
 
-  function desktopAvailability(profile) {
-    if (profile === "native") return "Native output"
+  function desktopAction(profile) {
+    if (profile === "native") return "Use full monitor · 32:9"
+    return "Center desktop · " + profile
+  }
+
+  function desktopSummary(profile) {
+    var resolution = profileResolution(profile)
     var data = profileData(profile)
-    if (!data || !data.available) return "Gamescope only"
-    return data.verified ? "Ready" : "Test once"
+    if (profile === "native") return resolution + " · Native output · restores the full-width desktop"
+    if (!data || !data.available)
+      return resolution + " · Gamescope only · not advertised by this monitor; use Steam below"
+    if (data.verified) return resolution + " · Ready · verified for this monitor"
+    return resolution + " · Test once · starts a timed safety test"
   }
 
   function selectDesktop(profile) {
@@ -117,6 +126,7 @@ Panel {
   function copySteam(profile) {
     if (busy) return
     root.busy = true
+    root.copiedProfile = profile
     copyProc.command = [root.cliPath, "steam-option", profile, "--copy"]
     copyProc.running = true
   }
@@ -177,7 +187,7 @@ Panel {
     onExited: function(exitCode) {
       root.busy = false
       root.message = exitCode === 0
-        ? "Steam launch option copied to the clipboard."
+        ? root.copiedProfile + " Steam option copied. Paste it into the game's Steam Launch Options."
         : "Could not copy the Steam launch option."
     }
   }
@@ -188,7 +198,7 @@ Panel {
     owner: root.barIdentity
     bar: root.bar
     open: root.opened
-    centerOnBar: true
+    centerOnBar: false
     focusTarget: keyCatcher
     contentWidth: panel.fittedContentWidth(Style.space(430))
     contentHeight: panel.fittedContentHeight(contentColumn.implicitHeight, Style.space(620))
@@ -237,7 +247,7 @@ Panel {
 
           Text {
             width: parent.width
-            text: "Resize the whole desktop below, or keep the desktop native and resize only one Steam game."
+            text: "Choose whether to change the entire desktop or copy a setting for one Steam game."
             color: Qt.darker(root.foreground, 1.35)
             font.family: root.fontFamily
             font.pixelSize: Style.font.bodySmall
@@ -245,64 +255,58 @@ Panel {
           }
 
           PanelSeparator { foreground: root.foreground }
-          PanelSectionHeader { text: "DESKTOP · WHOLE SCREEN"; foreground: root.foreground; fontFamily: root.fontFamily }
-
-          Row {
-            width: parent.width
-            spacing: Style.space(6)
-
-            Repeater {
-              model: [
-                { id: "native", title: "32:9" },
-                { id: "21:9", title: "21:9" },
-                { id: "16:9", title: "16:9" }
-              ]
-
-              Button {
-                required property var modelData
-                readonly property var profileInfo: root.profileData(modelData.id)
-                width: (contentColumn.width - Style.space(12)) / 3
-                text: modelData.title
-                tooltipText: root.profileResolution(modelData.id) + " · " + root.desktopAvailability(modelData.id)
-                selected: root.activeProfile === modelData.id
-                enabled: !root.busy && root.pendingToken === ""
-                  && (modelData.id === "native" || (profileInfo && profileInfo.available))
-                foreground: root.foreground
-                bordered: true
-                onClicked: root.selectDesktop(modelData.id)
-              }
-            }
-          }
-
-          Row {
-            width: parent.width
-            spacing: Style.space(6)
-
-            Repeater {
-              model: ["native", "21:9", "16:9"]
-
-              Text {
-                required property string modelData
-                width: (contentColumn.width - Style.space(12)) / 3
-                text: root.profileResolution(modelData) + "\n" + root.desktopAvailability(modelData)
-                color: modelData !== "native" && root.desktopAvailability(modelData) === "Gamescope only"
-                  ? Qt.darker(root.foreground, 1.5)
-                  : Qt.darker(root.foreground, 1.25)
-                font.family: root.fontFamily
-                font.pixelSize: Style.font.caption
-                horizontalAlignment: Text.AlignHCenter
-                wrapMode: Text.WordWrap
-              }
-            }
-          }
+          PanelSectionHeader { text: "1 · DESKTOP MODE · AFFECTS EVERYTHING"; foreground: root.foreground; fontFamily: root.fontFamily }
 
           Text {
             width: parent.width
-            text: "Desktop switching only uses modes advertised by the monitor. Unavailable profiles remain usable through Gamescope."
+            text: "These buttons immediately change the target display. The selected mode stays active until you choose another or log out."
             color: Qt.darker(root.foreground, 1.35)
             font.family: root.fontFamily
             font.pixelSize: Style.font.bodySmall
             wrapMode: Text.WordWrap
+          }
+
+          Column {
+            width: parent.width
+            spacing: Style.space(8)
+
+            Repeater {
+              model: [
+                { id: "native" },
+                { id: "21:9" },
+                { id: "16:9" }
+              ]
+
+              Column {
+                required property var modelData
+                readonly property var profileInfo: root.profileData(modelData.id)
+                width: contentColumn.width
+                spacing: Style.space(3)
+
+                Button {
+                  width: parent.width
+                  text: root.desktopAction(modelData.id)
+                  tooltipText: root.desktopSummary(modelData.id)
+                  selected: root.activeProfile === modelData.id
+                  enabled: !root.busy && root.pendingToken === ""
+                    && (modelData.id === "native" || (profileInfo && profileInfo.available))
+                  foreground: root.foreground
+                  bordered: true
+                  onClicked: root.selectDesktop(modelData.id)
+                }
+
+                Text {
+                  width: parent.width
+                  text: root.desktopSummary(modelData.id)
+                  color: modelData.id !== "native" && (!profileInfo || !profileInfo.available)
+                    ? Qt.darker(root.foreground, 1.5)
+                    : Qt.darker(root.foreground, 1.25)
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.caption
+                  wrapMode: Text.WordWrap
+                }
+              }
+            }
           }
 
           Column {
@@ -347,11 +351,11 @@ Panel {
           }
 
           PanelSeparator { foreground: root.foreground }
-          PanelSectionHeader { text: "STEAM · ONE GAME"; foreground: root.foreground; fontFamily: root.fontFamily }
+          PanelSectionHeader { text: "2 · STEAM OPTION · ONE GAME ONLY"; foreground: root.foreground; fontFamily: root.fontFamily }
 
           Text {
             width: parent.width
-            text: "Copy, then paste into Steam → game Properties → Launch Options. The desktop stays native while Gamescope centers the game."
+            text: "These buttons do not change the display. They copy a Gamescope command; paste it into Steam → game Properties → Launch Options."
             color: Qt.darker(root.foreground, 1.35)
             font.family: root.fontFamily
             font.pixelSize: Style.font.bodySmall
@@ -381,6 +385,15 @@ Panel {
               enabled: !root.busy
               onClicked: root.copySteam("16:9")
             }
+          }
+
+          Text {
+            width: parent.width
+            text: "21:9 = " + root.profileResolution("21:9") + " · 16:9 = " + root.profileResolution("16:9")
+            color: Qt.darker(root.foreground, 1.35)
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+            wrapMode: Text.WordWrap
           }
 
           Text {

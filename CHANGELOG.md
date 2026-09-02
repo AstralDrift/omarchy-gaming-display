@@ -3,6 +3,15 @@
 All notable changes to this project are documented here. Versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [1.1.1] - 2026-09-01
+
+### Fixed
+
+- Anchored the panel beside the bar widget that opened it instead of centering
+  it on the screen.
+- Replaced ambiguous aspect-ratio buttons with explicit whole-desktop actions
+  and added plain-language explanations for desktop versus Steam behavior.
+
 ## [1.1.0] - 2026-09-01
 
 ### Added
@@ -38,6 +47,7 @@ All notable changes to this project are documented here. Versions follow
 - Rollback-protected desktop testing and monitor-specific verification.
 - Steam launch-option generation and Gamescope wrapper.
 
+[1.1.1]: https://github.com/AstralDrift/omarchy-gaming-display/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/AstralDrift/omarchy-gaming-display/compare/v1.0.1...v1.1.0
 [1.0.1]: https://github.com/AstralDrift/omarchy-gaming-display/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/AstralDrift/omarchy-gaming-display/releases/tag/v1.0.0
