@@ -3,6 +3,13 @@
 All notable changes to this project are documented here. Versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [1.1.3] - 2026-09-01
+
+### Fixed
+
+- Replaced ambiguous best-effort cleanup expressions with explicit control
+  flow so ShellCheck and the release workflow pass reliably.
+
 ## [1.1.2] - 2026-09-01
 
 ### Fixed
@@ -56,6 +63,7 @@ All notable changes to this project are documented here. Versions follow
 - Rollback-protected desktop testing and monitor-specific verification.
 - Steam launch-option generation and Gamescope wrapper.
 
+[1.1.3]: https://github.com/AstralDrift/omarchy-gaming-display/compare/v1.1.2...v1.1.3
 [1.1.2]: https://github.com/AstralDrift/omarchy-gaming-display/compare/v1.1.1...v1.1.2
 [1.1.1]: https://github.com/AstralDrift/omarchy-gaming-display/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/AstralDrift/omarchy-gaming-display/compare/v1.0.1...v1.1.0
